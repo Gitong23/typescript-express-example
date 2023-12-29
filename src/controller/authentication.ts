@@ -1,68 +1,76 @@
 import express from 'express'
+import User from '../model/User'
+import { string, z } from 'zod'
+import bcrypt from 'bcrypt'
+import jwt from 'jsonwebtoken'
 
-import { createUser, getUserByEmail } from '../db/user'
-import { random, authentication } from '../helpers'
+const userSchema = z.object({
+    username: z.string().min(3),
+    email: z.string().email(),
+    password: z.string().min(6),
+});
 
-export const login = async (req: express.Request, res: express.Response) =>{
+const userLoginSchema = z.object({
+    email: z.string(),
+    password: z.string()
+})
+
+const jwt_secret = 'karn-tong-api'
+
+export const register =  async (req: express.Request<{}, {}, {
+    username: string,
+    email: string,
+    password: string
+}>, res: express.Response) => {
     try {
-        const { email, password } = req.body
+        const validateRequest = userSchema.parse(req.body)
 
-        if(!email || !password){
-            return res.sendStatus(400)
+        //check not duplicate email
+        const findEmail = await User.findOne({where: {email: req.body.email}})
+
+        if(findEmail){
+            res.status(401).json({error: "Invalid Duplicate Email"})
         }
 
-        const user = await getUserByEmail(email).select('+authentication.salt +authentication.password')
-
-        if(!user){
-            return res.sendStatus(400)
-        }
-
-        const expectedHash = authentication(user.authentication.salt, password)
-
-        if(user.authentication.password !== expectedHash){
-            return res.sendStatus(403)
-        }
- 
-        const salt = random()
-        user.authentication.sessionToken = authentication(salt, user._id.toString())
-
-        await user.save()
-        res.cookie('ANTONIO-AUTH', user.authentication.sessionToken, { domain: 'localhost', path: '/'} )
-
-        return res.status(200).json(user).end()
+        const newUser = await User.create(
+            req.body
+        )
+        return res.status(200).json(newUser)
     } catch (error) {
-        console.log(error)
-        return res.sendStatus(400)
+        console.log("Validation error:", error.errors)
+        return res.status(400).json({error: "Invalid request body"})
     }
 }
 
-export const register =  async (req: express.Request, res: express.Response) => {
+export const login = async (req: express.Request<{}, {}, {
+    email: string,
+    password: string
+}>, res: express.Response) =>{
 
     try {
-        const { email, password, username } = req.body;
-        if(!email || !password || !username){
-            return res.sendStatus(400)
-        }
+        const validReq = userLoginSchema.safeParse(req.body) 
+        if(!validReq.success) return res.status(400).json({error: 'Invalid Request'})
 
-        const existing = await getUserByEmail(email)
+        const findUser = await User.findOne({where: {email: req.body.email}})
+        
+        if(!findUser ) return res.status(401).json({error: 'Not Found User Name'})
 
-        if(existing){
-            return res.sendStatus(400)
-        }
+        const matchPassword = await bcrypt.compare(req.body.password, findUser.password)
+        if(!matchPassword) return res.status(401).json({error: 'Wrong Password'})
 
-        const salt = random()
-        const user = await createUser({
-            email, 
-            username,
-            authentication: {
-                salt,
-                password: authentication(salt, password),
-            }
+        const { id , email } = findUser
+
+        //return token
+        const accessToken = jwt.sign({email: email, userId: id}, jwt_secret, { expiresIn: '1h' })
+
+        res.status(200).json({
+            email: email,
+            userId: id,
+            accessToken: accessToken
         })
-
-        return res.status(200).json(user).end()
+        
     } catch (error) {
         console.log(error)
-        return res.sendStatus(400)
+        return res.status(500).json({error: "Intenal Server Error"})
     }
 }
